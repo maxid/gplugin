@@ -74,8 +74,8 @@ func dependsOf(value any) []string {
 	return nil
 }
 
-// idOf reads the id of anything this package tracks. Both Module[C] and Plugin[H] have
-// an ID-like method, and each layer formats its own label, so the id is passed in.
+// sortedIDs returns the keys of a name-keyed map in sorted order, so both layers report
+// and order their contents deterministically.
 func sortedIDs[V any](entries map[string]V) []string {
 	ids := make([]string, 0, len(entries))
 	for id := range entries {
