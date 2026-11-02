@@ -137,11 +137,11 @@ func (r *Registry[H]) Snapshot() ([]Status, error) {
 	}
 	statuses := make([]Status, 0, len(ordered))
 	for _, name := range ordered {
-		status := entryOf(name, r.plugins[name])
+		plugin := r.plugins[name]
 		statuses = append(statuses, Status{
-			ID:        status.ID,
-			Version:   status.Version,
-			DependsOn: status.DependsOn,
+			ID:        name,
+			Version:   versionOf(plugin),
+			DependsOn: dependenciesOf(plugin),
 			State:     r.states[name],
 			Err:       r.errs[name],
 		})

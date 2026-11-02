@@ -44,12 +44,22 @@ type Entry struct {
 
 // entryOf builds the manifest row of anything that has an id.
 func entryOf(id string, value any) Entry {
-	entry := Entry{ID: id}
+	return Entry{ID: id, Version: versionOf(value), DependsOn: dependenciesOf(value)}
+}
+
+// versionOf reads an optional Versioned; an unversioned entry reports "".
+func versionOf(value any) string {
 	if versioned, ok := value.(Versioned); ok {
-		entry.Version = versioned.Version()
+		return versioned.Version()
 	}
+	return ""
+}
+
+// dependenciesOf reads an optional Dependent and copies the list, so a caller cannot
+// mutate the plugin's own declaration.
+func dependenciesOf(value any) []string {
 	if dependent, ok := value.(Dependent); ok {
-		entry.DependsOn = append([]string(nil), dependent.DependsOn()...)
+		return append([]string(nil), dependent.DependsOn()...)
 	}
-	return entry
+	return nil
 }
