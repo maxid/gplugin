@@ -12,8 +12,8 @@ type Module[C any] interface {  // 装配：注册进容器 C 的能力
 
 type Plugin[H any] interface {  // 宿主扩展：挂到活的宿主 H 上的扩展
     Name() string
-    Load(H) error
-    Unload() error
+    Start(H) error
+    Stop() error
 }
 ```
 
@@ -55,28 +55,50 @@ for _, entry := range assembly.Manifest() {
 
 ## 2. 宿主扩展层：`Plugin` / `Registry`
 
-库持有宿主对象，让具名扩展挂上去。
+库持有宿主对象，让具名扩展挂上去，并且在运行期能开关。
 
 ```go
-reg := gplugin.NewRegistry[*Broker]()
+reg := gplugin.NewRegistry(broker, gplugin.WithObserver(myStatusLight{}))
 reg.Add(authPlugin)                 // Name() "auth"
 reg.Add(metricsPlugin)              // Name() "metrics", DependsOn: []string{"auth"}
 
-entries, err := reg.Manifest()      // 只算装载顺序，不真的装载
-if err := reg.Load(broker); err != nil {
-    return err                      // 失败前已装载的插件已被卸载
+if err := reg.Start("metrics"); err != nil {   // 先启 auth
+    return err                                 // auth/metrics 已被回滚
 }
-defer reg.Unload()                  // 逆序卸载，错误合并返回
+defer reg.StopAll()                            // 从最新开始，错误合并返回
+
+statuses, err := reg.Snapshot()     // 装配了哪些插件，按启动序
+for _, s := range statuses {
+    log.Printf("%s %s %s", s.ID, s.State, s.Err)
+}
 ```
 
-保证：重名报错；`Load` 失败会卸载已装载者；`Unload` 从最新装载的开始并合并所有失败；
-重复 `Load` 被拒绝（否则钩子会注册两遍）。
+**三态。** `StateRegistered`（已注册、从未启动）、`StateEnabled`（运行中）、
+`StateStopped`（跑过又停了）。三者刻意区分：“关掉了”和“从来没开过”是两个事实，运维两者都要看。
+
+**观察者。** `Observer{StateChanged(Event)}` 收到每一次转移的 `From`、`To`，失败时还带 `Err`——
+应用据此打印启动了哪些插件、点亮灰/绿/红状态灯、统计失败次数，都不必轮询。观察者在转移记录完成
+之后同步调用、不持锁：实现不得阻塞，也不得回调 `Start`/`Stop`。
+
+**保证。**
+
+- **顺序即依赖顺序**，同层按名字，滚动重启不会换序。
+- **启动带闭包**：`Start("web")` 连带启动它依赖的插件，已在跑的跳过，因此控制调用可重试。
+- **停止会级联**：`Stop("cache")` 把依赖 cache 的全部插件逆序停掉；`Stop` 失败的插件保持
+  enabled 并记录原因，不假装已经停掉。
+- **失败可见**：`Start` 失败只回滚**本次调用**启动的那些，记录原因、发一条带 `Err` 的事件，
+  返回的错误点名失败的插件。
+- 重名、空名、未注册的名字都是错误；绝不会悄悄缩小结果。
+
+可运行示例见 [`examples/lifecycle`](examples/lifecycle/main.go)：启动后打印一张状态表，
+灯是灰/绿/红——颜色属于应用，不属于本库。
 
 ## 3. 本包不做的事
 
 - **不做动态插件**：没有 `.so`、没有运行时下载、没有服务发现。插件编译进二进制，
   本包决定装配什么、以什么顺序装配，而不是运行时存在什么。
 - **不含协议语义**：钩子、事件与生命周期留在拥有它们的库里。
+- **不做展示**：本库只报告 `State`；它变成颜色、文字还是指标，由应用决定。
 - **没有全局状态**：包初始化阶段不注册任何东西。
 
 ## 4. 依赖位置

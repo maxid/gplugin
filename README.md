@@ -13,8 +13,8 @@ type Module[C any] interface {  // assembly: a capability that registers into C
 
 type Plugin[H any] interface {  // host extension: an extension of a live host H
     Name() string
-    Load(H) error
-    Unload() error
+    Start(H) error
+    Stop() error
 }
 ```
 
@@ -62,23 +62,50 @@ that has its own lifecycle interface, without renaming anything in its repositor
 
 ## 2. Host extensions — `Plugin`, `Registry`
 
-A library owns a host object and lets named extensions attach to it.
+A library owns a host object and lets named extensions attach to it — and switch on and
+off at run time.
 
 ```go
-reg := gplugin.NewRegistry[*Broker]()
+reg := gplugin.NewRegistry(broker, gplugin.WithObserver(myStatusLight{}))
 reg.Add(authPlugin)                 // Name() "auth"
 reg.Add(metricsPlugin)              // Name() "metrics", DependsOn: []string{"auth"}
 
-entries, err := reg.Manifest()      // planned load order, without loading anything
-if err := reg.Load(broker); err != nil {
-    return err                      // plugins loaded before the failure were unloaded
+if err := reg.Start("metrics"); err != nil {   // starts auth first
+    return err                                 // auth/metrics were rolled back
 }
-defer reg.Unload()                  // reverse load order, failures joined
+defer reg.StopAll()                            // newest first, failures joined
+
+statuses, err := reg.Snapshot()     // what is wired in, in start order
+for _, s := range statuses {
+    log.Printf("%s %s %s", s.ID, s.State, s.Err)
+}
 ```
 
-Guarantees: duplicate names are errors; a failing `Load` unloads what already loaded;
-`Unload` runs newest first and joins every failure; loading twice is refused (it would
-register hooks twice).
+**States.** `StateRegistered` (known, never started), `StateEnabled` (running) and
+`StateStopped` (ran, then stopped). The three are deliberately distinct: "switched off" and
+"never switched on" are different facts, and an operator needs both.
+
+**Observers.** `Observer{StateChanged(Event)}` receives every transition with its `From`,
+`To` and, on a failure, the `Err` — so an application can print what started, light a
+status indicator grey/green/red, or count failures, without polling. Observers run
+synchronously after the transition is recorded, with no lock held: they must not block and
+must not call back into `Start`/`Stop`.
+
+**Guarantees.**
+
+- **Order is dependency order**, ties break on name, so a rolling restart cannot reorder.
+- **Start pulls its closure.** `Start("web")` starts the dependencies too, and skips the
+  ones already running, so a control call is retryable.
+- **Stop cascades.** `Stop("cache")` stops everything that depends on `cache`, newest
+  first; a plugin whose `Stop` failed stays enabled with the reason recorded rather than
+  pretending it stopped.
+- **Failures are visible.** A failed `Start` rolls back only what that call started,
+  records the reason, emits an event carrying it and returns an error naming the plugin.
+- Duplicate names, empty names and unregistered names are errors; nothing is silently
+  smaller.
+
+See [`examples/lifecycle`](examples/lifecycle/main.go) for a runnable status table whose
+light is grey, green or red — the colour lives in the application, not here.
 
 ## 3. What this package does not do
 
@@ -87,6 +114,8 @@ register hooks twice).
   what exists at run time.
 - **No protocol semantics.** Hooks, events and lifecycles stay in the library that owns
   them.
+- **No presentation.** This package reports a `State`; whether it becomes a colour, a word
+  or a metric is the application's decision.
 - **No global state.** Nothing is registered at package initialization.
 
 ## 4. Naming
